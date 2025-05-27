@@ -105,16 +105,19 @@ class SAM2Train(SAM2Base):
                 p.requires_grad = False
 
     def forward(self, input: BatchedVideoDatapoint):
-        if self.training or not self.forward_backbone_per_frame_for_eval:
-            # precompute image features on all frames before tracking
-            backbone_out = self.forward_image(input.flat_img_batch)
-        else:
-            # defer image feature computation on a frame until it's being tracked
-            backbone_out = {"backbone_fpn": None, "vision_pos_enc": None}
-        backbone_out = self.prepare_prompt_inputs(backbone_out, input)
-        previous_stages_out = self.forward_tracking(backbone_out, input)
+        assert self.training, "Use SAM2Base for inference"
+    
+        # MemoryBank object could be passed or instantiated here
+        memory_bank = self.memory_bank if hasattr(self, "memory_bank") else None
+    
+        outputs = []
+        for batch in input:  # assuming input is a list of 8-frame batches
+            out = self.forward_with_memory(batch, memory_bank)
+            memory_bank.update(out["memory_features"], out["memory_pos_enc"])
+            outputs.append(out)
+    
+        return outputs
 
-        return previous_stages_out
 
     def _prepare_backbone_features_per_frame(self, img_batch, img_ids):
         """Compute the image backbone features on the fly for the given img_ids."""
