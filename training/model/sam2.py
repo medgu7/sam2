@@ -21,6 +21,8 @@ from sam2.utils.misc import concat_points
 
 from training.utils.data_utils import BatchedVideoDatapoint
 
+from sam2.modeling.memory_bank import MemoryBank
+
 
 class SAM2Train(SAM2Base):
     def __init__(
@@ -28,6 +30,7 @@ class SAM2Train(SAM2Base):
         image_encoder,
         memory_attention=None,
         memory_encoder=None,
+        memory_bank_cfg=None,
         prob_to_use_pt_input_for_train=0.0,
         prob_to_use_pt_input_for_eval=0.0,
         prob_to_use_box_input_for_train=0.0,
@@ -71,6 +74,8 @@ class SAM2Train(SAM2Base):
         super().__init__(image_encoder, memory_attention, memory_encoder, **kwargs)
         self.use_act_ckpt_iterative_pt_sampling = use_act_ckpt_iterative_pt_sampling
         self.forward_backbone_per_frame_for_eval = forward_backbone_per_frame_for_eval
+
+        self.memory_bank = MemoryBank(**memory_bank_cfg) if memory_bank_cfg else None
 
         # Point sampler and conditioning frames
         self.prob_to_use_pt_input_for_train = prob_to_use_pt_input_for_train
