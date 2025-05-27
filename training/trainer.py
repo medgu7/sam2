@@ -53,6 +53,8 @@ from training.utils.train_utils import (
     setup_distributed_backend,
 )
 
+from sam2.modeling.memory_bank import MemoryBank
+
 
 CORE_LOSS_KEY = "core_loss"
 
@@ -182,6 +184,9 @@ class Trainer:
         distributed = DistributedConf(**distributed or {})
         cuda = CudaConf(**cuda or {})
         self.where = 0.0
+
+        self.memory_bank = MemoryBank(max_size=getattr(self.model_conf, "memory_bank_size", 16), device=str(self.device))
+
 
         self._infer_distributed_backend_if_none(distributed, accelerator)
 
@@ -454,7 +459,11 @@ class Trainer:
         phase: str,
     ):
 
-        outputs = model(batch)
+        if hasattr(self.model, "forward_with_memory"):
+            outputs = self.model.forward_with_memory(batch, self.memory_bank)
+        else:
+            outputs = self.model(batch)
+
         targets = batch.masks
         batch_size = len(batch.img_batch)
 
@@ -473,6 +482,17 @@ class Trainer:
             loss = self._log_loss_detailed_and_return_core_loss(
                 loss, loss_log_str, self.steps[phase]
             )
+
+        # Assume outputs contains high-res mask predictions and features
+        if isinstance(outputs, dict) and "memory_features" in outputs:
+            for i in range(outputs["memory_features"].shape[0]):
+                self.memory_bank.add(
+                    outputs["memory_features"][i].unsqueeze(0),
+                    outputs["memory_pos_enc"][i].unsqueeze(0),
+                    outputs["iou_scores"][i],
+                    outputs["image_embedding"][i].reshape(-1)
+                )
+
 
         if self.steps[phase] % self.logging_conf.log_scalar_frequency == 0:
             self.logger.log(
