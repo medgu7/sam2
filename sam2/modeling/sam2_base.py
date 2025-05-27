@@ -478,6 +478,80 @@ class SAM2Base(torch.nn.Module):
             )
         return backbone_out
 
+    def forward_with_memory(self, batch, memory_bank):
+        device = self.device
+        images = batch.image.to(dtype=torch.float32, device=device)
+        masks = batch.mask.to(dtype=torch.float32, device=device)
+    
+        coords_torch = batch.pt.unsqueeze(1).float().to(device) if hasattr(batch, "pt") else None
+        labels_torch = batch.p_label.unsqueeze(1).int().to(device) if hasattr(batch, "p_label") else None
+        points = (coords_torch, labels_torch) if coords_torch is not None else None
+    
+        # 1. Encode image
+        backbone_out = self.forward_image(images)
+        _, vision_feats, vision_pos_embeds, feat_sizes = self._prepare_backbone_features(backbone_out)
+        B = vision_feats[-1].shape[1]
+    
+        # 2. Apply memory attention
+        if memory_bank is not None and len(memory_bank) > 0:
+            mem_feats, mem_pos, _ = memory_bank.get_memory()
+            vision_feats[-1] = self.memory_attention(
+                curr=[vision_feats[-1]],
+                curr_pos=[vision_pos_embeds[-1]],
+                memory=mem_feats,
+                memory_pos=mem_pos,
+                num_obj_ptr_tokens=0,
+            )
+        else:
+            vision_feats[-1] = vision_feats[-1] + self.no_mem_embed.expand_as(vision_feats[-1])
+            vision_pos_embeds[-1] = vision_pos_embeds[-1] + self.no_mem_pos_enc.expand_as(vision_pos_embeds[-1])
+    
+        # 3. Reformat for decoder
+        feats = [feat.permute(1, 2, 0).view(B, -1, *size) for feat, size in zip(vision_feats[::-1], feat_sizes[::-1])][::-1]
+        image_embed = feats[-1]
+        high_res_feats = feats[:-1]
+    
+        # 4. Prompt encoder
+        sparse_embeddings, dense_embeddings = self.sam_prompt_encoder(
+            points=points,
+            boxes=None,
+            masks=None,
+            batch_size=B,
+        )
+    
+        # 5. Mask decoder
+        low_res_multimasks, iou_predictions, sam_output_tokens, object_score_logits = self.sam_mask_decoder(
+            image_embeddings=image_embed,
+            image_pe=self.sam_prompt_encoder.get_dense_pe(),
+            sparse_prompt_embeddings=sparse_embeddings,
+            dense_prompt_embeddings=dense_embeddings,
+            multimask_output=False,
+            repeat_image=False,
+            high_res_features=high_res_feats
+        )
+    
+        # 6. Resize predictions
+        pred = F.interpolate(low_res_multimasks, size=(masks.shape[-2], masks.shape[-1]), mode='bilinear')
+        high_res_multimasks = F.interpolate(low_res_multimasks, size=(self.image_size, self.image_size), mode="bilinear", align_corners=False)
+    
+        # 7. Memory encoding
+        maskmem_features, maskmem_pos_enc = self._encode_new_memory(
+            current_vision_feats=vision_feats,
+            feat_sizes=feat_sizes,
+            pred_masks_high_res=high_res_multimasks,
+            object_score_logits=object_score_logits,
+            is_mask_from_pts=(points is not None)
+        )
+    
+        return {
+            "pred": pred,
+            "memory_features": maskmem_features,
+            "memory_pos_enc": maskmem_pos_enc[0],
+            "iou_scores": iou_predictions[:, 0],
+            "image_embedding": image_embed,
+        }
+    
+
     def _prepare_backbone_features(self, backbone_out):
         """Prepare and flatten visual features."""
         backbone_out = backbone_out.copy()
