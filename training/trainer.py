@@ -185,12 +185,13 @@ class Trainer:
         cuda = CudaConf(**cuda or {})
         self.where = 0.0
 
-        self.memory_bank = MemoryBank(max_size=getattr(self.model_conf, "memory_bank_size", 16), device=str(self.device))
-
 
         self._infer_distributed_backend_if_none(distributed, accelerator)
 
         self._setup_device(accelerator)
+
+        self.memory_bank = MemoryBank(max_size=getattr(self.model_conf, "memory_bank_size", 16), device=str(self.device))
+
 
         self._setup_torch_dist_and_backend(cuda, distributed)
 
